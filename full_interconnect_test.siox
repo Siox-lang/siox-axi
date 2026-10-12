@@ -1,0 +1,189 @@
+module full_interconnect_test;
+
+use std::bits::unsigned;
+use axi::full::{Axi4, Manager, Subordinate, Interconnect, INCR, OKAY, DECERR};
+
+// A 64-word INCR-burst memory, one transaction per direction at a time.
+entity Ram { clk: Bit in, bus: Axi4<4, 16, 32> Subordinate }
+impl Ram {
+    let mem: unsigned[32][64];
+    let wphase: unsigned[2] = 0;
+    let waddr: unsigned[16] = 0;
+    let wid: unsigned[4] = 0;
+    let rphase: unsigned[1] = 0;
+    let raddr: unsigned[16] = 0;
+    let rbeat: unsigned[8] = 0;
+    let rlen: unsigned[8] = 0;
+    let rid: unsigned[4] = 0;
+    step: process {
+        if clk.rising() {
+            if wphase == 0 {
+                if bus.awvalid { waddr = bus.awaddr; wid = bus.awid; wphase = 1; }
+            } else if wphase == 1 {
+                if bus.wvalid {
+                    mem[waddr[7..2]] = bus.wdata;
+                    waddr = waddr + 4;
+                    if bus.wlast { wphase = 2; }
+                }
+            } else if bus.bready {
+                wphase = 0;
+            }
+            if rphase == 0 {
+                if bus.arvalid {
+                    raddr = bus.araddr; rlen = bus.arlen; rid = bus.arid; rbeat = 0; rphase = 1;
+                }
+            } else if bus.rready {
+                if rbeat == rlen {
+                    rphase = 0;
+                } else {
+                    raddr = raddr + 4;
+                    rbeat = rbeat + 1;
+                }
+            }
+        }
+    }
+    bus.awready = Bit(wphase == 0);
+    bus.wready = Bit(wphase == 1);
+    bus.bvalid = Bit(wphase == 2);
+    bus.bid = wid;
+    bus.bresp = OKAY;
+    bus.arready = Bit(rphase == 0);
+    bus.rvalid = Bit(rphase == 1);
+    bus.rid = rid;
+    bus.rdata = mem[raddr[7..2]];
+    bus.rresp = OKAY;
+    bus.rlast = Bit(rbeat == rlen);
+}
+
+// A Manager running one write burst on `wgo` and one read burst on `rgo`:
+// data `wbase + beat` out, the read data summed in.
+entity Bfm {
+    clk: Bit in, bus: Axi4<4, 16, 32> Manager, id: unsigned[4] in,
+    wgo: Bit in, waddr: unsigned[16] in, wlen: unsigned[8] in, wbase: unsigned[32] in,
+    wdone: Bit out, wresp: unsigned[2] out, wbid: unsigned[4] out,
+    rgo: Bit in, raddr: unsigned[16] in, rlen: unsigned[8] in,
+    rdone: Bit out, rresp: unsigned[2] out, rbid: unsigned[4] out,
+    rsum: unsigned[32] out, rbeats: unsigned[8] out
+}
+impl Bfm {
+    let wphase: unsigned[2] = 0;
+    let wbeat: unsigned[8] = 0;
+    let wresp_q: unsigned[2] = 0;
+    let wbid_q: unsigned[4] = 0;
+    let rphase: unsigned[2] = 0;
+    let rresp_q: unsigned[2] = 0;
+    let rbid_q: unsigned[4] = 0;
+    let sum: unsigned[32] = 0;
+    let beats: unsigned[8] = 0;
+    step: process {
+        if clk.rising() {
+            if wphase == 0 {
+                if wgo and bus.awready { wphase = 1; wbeat = 0; }
+            } else if wphase == 1 {
+                if bus.wready {
+                    if wbeat == wlen { wphase = 2; } else { wbeat = wbeat + 1; }
+                }
+            } else if wphase == 2 {
+                if bus.bvalid { wresp_q = bus.bresp; wbid_q = bus.bid; wphase = 3; }
+            } else if not wgo {
+                wphase = 0;
+            }
+            if rphase == 0 {
+                if rgo and bus.arready { rphase = 1; sum = 0; beats = 0; }
+            } else if rphase == 1 {
+                if bus.rvalid {
+                    sum = sum + bus.rdata;
+                    beats = beats + 1;
+                    rresp_q = bus.rresp;
+                    rbid_q = bus.rid;
+                    if bus.rlast { rphase = 2; }
+                }
+            } else if not rgo {
+                rphase = 0;
+            }
+        }
+    }
+    bus.awid = id; bus.awaddr = waddr; bus.awlen = wlen; bus.awsize = 2; bus.awburst = INCR;
+    bus.awlock = '0'; bus.awcache = 0; bus.awprot = 0; bus.awqos = 0; bus.awregion = 0;
+    bus.awvalid = Bit(wphase == 0) and wgo;
+    bus.wdata = wbase + unsigned[32](wbeat);
+    bus.wstrb = 0xF;
+    bus.wlast = Bit(wbeat == wlen);
+    bus.wvalid = Bit(wphase == 1);
+    bus.bready = Bit(wphase == 2);
+    bus.arid = id; bus.araddr = raddr; bus.arlen = rlen; bus.arsize = 2; bus.arburst = INCR;
+    bus.arlock = '0'; bus.arcache = 0; bus.arprot = 0; bus.arqos = 0; bus.arregion = 0;
+    bus.arvalid = Bit(rphase == 0) and rgo;
+    bus.rready = Bit(rphase == 1);
+    wdone = Bit(wphase == 3);
+    wresp = wresp_q;
+    wbid = wbid_q;
+    rdone = Bit(rphase == 2);
+    rresp = rresp_q;
+    rbid = rbid_q;
+    rsum = sum;
+    rbeats = beats;
+}
+
+#[test]
+entity FullInterconnectTest {}
+impl FullInterconnectTest {
+    let clk: Bit = '0';
+    let ups: Axi4<4, 16, 32>[2];
+    let downs: Axi4<4, 16, 32>[2];
+    let bus: Interconnect<4, 16, 32, 2, 2, 8> = { .clk = clk, .up = ups, .down = downs };
+    let ram0: Ram = { .clk = clk, .bus = downs[0] };
+    let ram1: Ram = { .clk = clk, .bus = downs[1] };
+
+    let wgo0: Bit = '0'; let waddr0: unsigned[16] = 0; let wlen0: unsigned[8] = 0; let wbase0: unsigned[32] = 0;
+    let wdone0: Bit; let wresp0: unsigned[2]; let wbid0: unsigned[4];
+    let rgo0: Bit = '0'; let raddr0: unsigned[16] = 0; let rlen0: unsigned[8] = 0;
+    let rdone0: Bit; let rresp0: unsigned[2]; let rbid0: unsigned[4]; let rsum0: unsigned[32]; let rbeats0: unsigned[8];
+    let m0: Bfm = { .clk = clk, .bus = ups[0], .id = 3,
+                    .wgo = wgo0, .waddr = waddr0, .wlen = wlen0, .wbase = wbase0,
+                    .wdone = wdone0, .wresp = wresp0, .wbid = wbid0,
+                    .rgo = rgo0, .raddr = raddr0, .rlen = rlen0,
+                    .rdone = rdone0, .rresp = rresp0, .rbid = rbid0, .rsum = rsum0, .rbeats = rbeats0 };
+
+    let wgo1: Bit = '0'; let waddr1: unsigned[16] = 0; let wlen1: unsigned[8] = 0; let wbase1: unsigned[32] = 0;
+    let wdone1: Bit; let wresp1: unsigned[2]; let wbid1: unsigned[4];
+    let rgo1: Bit = '0'; let raddr1: unsigned[16] = 0; let rlen1: unsigned[8] = 0;
+    let rdone1: Bit; let rresp1: unsigned[2]; let rbid1: unsigned[4]; let rsum1: unsigned[32]; let rbeats1: unsigned[8];
+    let m1: Bfm = { .clk = clk, .bus = ups[1], .id = 9,
+                    .wgo = wgo1, .waddr = waddr1, .wlen = wlen1, .wbase = wbase1,
+                    .wdone = wdone1, .wresp = wresp1, .wbid = wbid1,
+                    .rgo = rgo1, .raddr = raddr1, .rlen = rlen1,
+                    .rdone = rdone1, .rresp = rresp1, .rbid = rbid1, .rsum = rsum1, .rbeats = rbeats1 };
+
+    // Both Managers write at once: four beats to RAM 0, two to RAM 1.
+    waddr0 = 0x000; wlen0 = 3; wbase0 = 0x100; wgo0 = '1';
+    waddr1 = 0x110; wlen1 = 1; wbase1 = 0x200; wgo1 = '1';
+    for cycle in 0..39 { await 1ns; clk = '1'; await 1ns; clk = '0'; }
+    await 1ns;
+    assert!(wdone0 == '1' and wdone1 == '1', "both write bursts complete");
+    assert!(wresp0 == OKAY and wbid0 == 3 and wresp1 == OKAY and wbid1 == 9,
+            "each B response carries its own Manager's ID");
+    wgo0 = '0'; wgo1 = '0';
+
+    // Each reads the other's burst back, again at once.
+    raddr0 = 0x110; rlen0 = 1; rgo0 = '1';
+    raddr1 = 0x000; rlen1 = 3; rgo1 = '1';
+    for cycle in 0..39 { await 1ns; clk = '1'; await 1ns; clk = '0'; }
+    await 1ns;
+    assert!(rdone0 == '1' and rbeats0 == 2 and rsum0 == 0x200 + 0x201 and rresp0 == OKAY and rbid0 == 3,
+            "Manager 0 reads RAM 1's two beats");
+    assert!(rdone1 == '1' and rbeats1 == 4 and rsum1 == 0x406 and rresp1 == OKAY and rbid1 == 9,
+            "Manager 1 reads RAM 0's four beats");
+    rgo0 = '0'; rgo1 = '0';
+
+    // Past the map: a write drains to DECERR, a three-beat read returns
+    // three DECERR beats, while the other path keeps working.
+    for cycle in 0..1 { await 1ns; clk = '1'; await 1ns; clk = '0'; }
+    waddr0 = 0x300; wlen0 = 1; wgo0 = '1';
+    raddr1 = 0x380; rlen1 = 2; rgo1 = '1';
+    for cycle in 0..29 { await 1ns; clk = '1'; await 1ns; clk = '0'; }
+    await 1ns;
+    assert!(wdone0 == '1' and wresp0 == DECERR and wbid0 == 3, "an unmapped write answers DECERR");
+    assert!(rdone1 == '1' and rbeats1 == 3 and rresp1 == DECERR and rbid1 == 9,
+            "an unmapped read returns every beat, DECERR, rlast on the third");
+}

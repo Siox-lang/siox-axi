@@ -87,3 +87,191 @@ pub const OKAY: integer = 0;
 pub const EXOKAY: integer = 1;
 pub const SLVERR: integer = 2;
 pub const DECERR: integer = 3;
+
+// `M` Managers sharing `N` Subordinates, single-issuing as AMD's AXI
+// Interconnect (PG059) in its Shared Access mode, but with that guide's
+// separate write and read arbiters: each path carries one transaction at a
+// time, so a read may overlap a write. Each path grants round-robin, PG059's
+// rule among equal-priority requesters, routes that transaction's address,
+// data and response channels, and is released by the `B` handshake or the
+// `rlast` beat. IDs pass through unchanged: with one transaction per path a
+// response is routed by selection, not by ID.
+//
+// Subordinate `i` owns the `2^REGION` bytes at `i << REGION`. An address past
+// the last one is answered here, as the default subordinate of Arm's AXI
+// specification (IHI 0022), and never reaches a Subordinate: every transfer
+// still completes, so write data is drained before `B` returns `DECERR`, and
+// a read returns `arlen + 1` beats of `DECERR` with `rlast` on the final one.
+// `W` is accepted after its `AW`, which the specification allows any
+// Subordinate to require.
+pub entity Interconnect<I: integer, A: integer, D: integer, M: integer, N: integer,
+                        REGION: integer> {
+    clk: Bit in,
+    up: Axi4<I, A, D>[M] Subordinate,
+    down: Axi4<I, A, D>[N] Manager
+}
+
+impl<I: integer, A: integer, D: integer, M: integer, N: integer, REGION: integer>
+    Interconnect<I, A, D, M, N, REGION> {
+    // Write path: phase (0 arbitrate, 1 AW, 2 W, 3 B), its Manager and target.
+    let wphase: unsigned[2] = 0;
+    let wowner: integer<0..(M - 1)> = 0;
+    let wtarget: unsigned[A] = 0;
+    let wid: unsigned[I] = 0;
+    // Read path: phase (0 arbitrate, 1 AR, 2 R), plus the beats a decode
+    // error still owes.
+    let rphase: unsigned[2] = 0;
+    let rowner: integer<0..(M - 1)> = 0;
+    let rtarget: unsigned[A] = 0;
+    let rid: unsigned[I] = 0;
+    let rleft: unsigned[8] = 0;
+
+    // The selected Subordinate's side of each handshake, or this
+    // interconnect's own answer for an unmapped address.
+    let awready: Bit;
+    let wready: Bit;
+    let bvalid: Bit;
+    let arready: Bit;
+    let rvalid: Bit;
+    let rlast: Bit;
+    if wtarget < N {
+        awready = down[wtarget].awready;
+        wready = down[wtarget].wready;
+        bvalid = down[wtarget].bvalid;
+    } else {
+        awready = '1';
+        wready = '1';
+        bvalid = '1';
+    }
+    if rtarget < N {
+        arready = down[rtarget].arready;
+        rvalid = down[rtarget].rvalid;
+        rlast = down[rtarget].rlast;
+    } else {
+        arready = '1';
+        rvalid = '1';
+        rlast = Bit(rleft == 0);
+    }
+
+    track: process {
+        if clk.rising() {
+            if wphase == 0 {
+                // Round-robin: the lowest requester above the last grant,
+                // else the lowest requester. Later assignments win.
+                for k in 0..M - 1 {
+                    if up[M - 1 - k].awvalid {
+                        wphase = 1;
+                        wowner = M - 1 - k;
+                        wtarget = up[M - 1 - k].awaddr >> REGION;
+                        wid = up[M - 1 - k].awid;
+                    }
+                }
+                for k in 0..M - 1 {
+                    if M - 1 - k > wowner {
+                        if up[M - 1 - k].awvalid {
+                            wphase = 1;
+                            wowner = M - 1 - k;
+                            wtarget = up[M - 1 - k].awaddr >> REGION;
+                            wid = up[M - 1 - k].awid;
+                        }
+                    }
+                }
+            } else if wphase == 1 {
+                if up[wowner].awvalid and awready { wphase = 2; }
+            } else if wphase == 2 {
+                if up[wowner].wvalid and wready and up[wowner].wlast { wphase = 3; }
+            } else {
+                if bvalid and up[wowner].bready { wphase = 0; }
+            }
+
+            if rphase == 0 {
+                for k in 0..M - 1 {
+                    if up[M - 1 - k].arvalid {
+                        rphase = 1;
+                        rowner = M - 1 - k;
+                        rtarget = up[M - 1 - k].araddr >> REGION;
+                        rid = up[M - 1 - k].arid;
+                        rleft = up[M - 1 - k].arlen;
+                    }
+                }
+                for k in 0..M - 1 {
+                    if M - 1 - k > rowner {
+                        if up[M - 1 - k].arvalid {
+                            rphase = 1;
+                            rowner = M - 1 - k;
+                            rtarget = up[M - 1 - k].araddr >> REGION;
+                            rid = up[M - 1 - k].arid;
+                            rleft = up[M - 1 - k].arlen;
+                        }
+                    }
+                }
+            } else if rphase == 1 {
+                if up[rowner].arvalid and arready { rphase = 2; }
+            } else {
+                if rvalid and up[rowner].rready {
+                    if rlast {
+                        rphase = 0;
+                    } else {
+                        rleft = rleft - 1;
+                    }
+                }
+            }
+        }
+    }
+
+    for j in 0..N - 1 {
+        down[j].awid = up[wowner].awid;
+        down[j].awaddr = up[wowner].awaddr;
+        down[j].awlen = up[wowner].awlen;
+        down[j].awsize = up[wowner].awsize;
+        down[j].awburst = up[wowner].awburst;
+        down[j].awlock = up[wowner].awlock;
+        down[j].awcache = up[wowner].awcache;
+        down[j].awprot = up[wowner].awprot;
+        down[j].awqos = up[wowner].awqos;
+        down[j].awregion = up[wowner].awregion;
+        down[j].awvalid = Bit(wphase == 1 and wtarget == j) and up[wowner].awvalid;
+        down[j].wdata = up[wowner].wdata;
+        down[j].wstrb = up[wowner].wstrb;
+        down[j].wlast = up[wowner].wlast;
+        down[j].wvalid = Bit(wphase == 2 and wtarget == j) and up[wowner].wvalid;
+        down[j].bready = Bit(wphase == 3 and wtarget == j) and up[wowner].bready;
+        down[j].arid = up[rowner].arid;
+        down[j].araddr = up[rowner].araddr;
+        down[j].arlen = up[rowner].arlen;
+        down[j].arsize = up[rowner].arsize;
+        down[j].arburst = up[rowner].arburst;
+        down[j].arlock = up[rowner].arlock;
+        down[j].arcache = up[rowner].arcache;
+        down[j].arprot = up[rowner].arprot;
+        down[j].arqos = up[rowner].arqos;
+        down[j].arregion = up[rowner].arregion;
+        down[j].arvalid = Bit(rphase == 1 and rtarget == j) and up[rowner].arvalid;
+        down[j].rready = Bit(rphase == 2 and rtarget == j) and up[rowner].rready;
+    }
+
+    for i in 0..M - 1 {
+        up[i].awready = Bit(wphase == 1 and wowner == i) and awready;
+        up[i].wready = Bit(wphase == 2 and wowner == i) and wready;
+        up[i].bvalid = Bit(wphase == 3 and wowner == i) and bvalid;
+        up[i].arready = Bit(rphase == 1 and rowner == i) and arready;
+        up[i].rvalid = Bit(rphase == 2 and rowner == i) and rvalid;
+        up[i].rlast = rlast;
+        if wtarget < N {
+            up[i].bid = down[wtarget].bid;
+            up[i].bresp = down[wtarget].bresp;
+        } else {
+            up[i].bid = wid;
+            up[i].bresp = DECERR;
+        }
+        if rtarget < N {
+            up[i].rid = down[rtarget].rid;
+            up[i].rdata = down[rtarget].rdata;
+            up[i].rresp = down[rtarget].rresp;
+        } else {
+            up[i].rid = rid;
+            up[i].rdata = 0;
+            up[i].rresp = DECERR;
+        }
+    }
+}

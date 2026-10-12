@@ -30,6 +30,7 @@ A parent connects a `Manager` and a `Subordinate` through one `let wire: AxiLite
 
 | Entity | What it does |
 |---|---|
+| `axi::full::Interconnect<I, A, D, M, N, REGION>` | `M` Managers to `N` Subordinates. Writes and reads each carry one transaction at a time on independent paths, granted round-robin, with bursts of any length. IDs pass through unchanged. Unmapped addresses are answered by a built-in default subordinate: drained writes get `DECERR`, reads get every beat as `DECERR`. |
 | `axi::lite::Interconnect<A, D, N, REGION>` | One Manager to `N` Subordinates. Subordinate `i` owns the `2^REGION` bytes at `i << REGION`; anything past the last one gets `DECERR`. Writes and reads route independently, one transaction each at a time. |
 | `axi::stream::RegisterSlice<D>` | Full-throughput skid buffer: registers every output, `tready` included. |
 | `axi::stream::Fifo<D, DEPTH>` | Synchronous first-word-fall-through FIFO. |
@@ -45,6 +46,17 @@ impl Soc {
     let gpio: Gpio = { .clk = clk, .bus = peripherals[1] };   // 0x1000
 }
 ```
+
+## References
+
+Behaviour follows the official sources:
+
+- Arm, *AMBA AXI Protocol Specification* (IHI 0022): handshakes, bursts, and
+  the default subordinate's `DECERR`, under which every transfer of a
+  transaction still completes.
+- AMD, *AXI Interconnect Product Guide* (PG059): single-issuing (Shared Access
+  mode), separate write and read arbiters, and round-robin among
+  equal-priority requesters.
 
 ## Test
 

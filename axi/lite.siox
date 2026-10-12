@@ -57,3 +57,91 @@ pub const OKAY: integer = 0;
 pub const EXOKAY: integer = 1;
 pub const SLVERR: integer = 2;
 pub const DECERR: integer = 3;
+
+// One Manager to `N` Subordinates. Subordinate `i` owns the `2^REGION` bytes
+// at `i << REGION`; an access past the last one is answered here with
+// `DECERR`. Writes and reads are routed independently, one transaction at a
+// time each: the address is decoded when it is first offered, and the path
+// stays with that Subordinate until its response is taken. That costs one
+// cycle per transaction and keeps the responses in order.
+pub entity Interconnect<A: integer, D: integer, N: integer, REGION: integer> {
+    clk: Bit in,
+    up: AxiLite<A, D> Subordinate,
+    down: AxiLite<A, D>[N] Manager
+}
+
+impl<A: integer, D: integer, N: integer, REGION: integer> Interconnect<A, D, N, REGION> {
+    // Write path: the target and which of AW/W it has accepted.
+    let wbusy: Bit = '0';
+    let wtarget: unsigned[A] = 0;
+    let aw_done: Bit = '0';
+    let w_done: Bit = '0';
+    // Read path.
+    let rbusy: Bit = '0';
+    let rtarget: unsigned[A] = 0;
+    let ar_done: Bit = '0';
+
+    track: process {
+        if clk.rising() {
+            if not wbusy {
+                if up.awvalid {
+                    wbusy = '1';
+                    wtarget = up.awaddr >> REGION;
+                    aw_done = '0';
+                    w_done = '0';
+                }
+            } else {
+                if up.awvalid and up.awready { aw_done = '1'; }
+                if up.wvalid and up.wready { w_done = '1'; }
+                if up.bvalid and up.bready { wbusy = '0'; }
+            }
+            if not rbusy {
+                if up.arvalid {
+                    rbusy = '1';
+                    rtarget = up.araddr >> REGION;
+                    ar_done = '0';
+                }
+            } else {
+                if up.arvalid and up.arready { ar_done = '1'; }
+                if up.rvalid and up.rready { rbusy = '0'; }
+            }
+        }
+    }
+
+    for i in 0..N - 1 {
+        down[i].awaddr = up.awaddr;
+        down[i].awprot = up.awprot;
+        down[i].wdata = up.wdata;
+        down[i].wstrb = up.wstrb;
+        down[i].araddr = up.araddr;
+        down[i].arprot = up.arprot;
+        down[i].awvalid = if wtarget == i { wbusy and up.awvalid and not aw_done } else { '0' };
+        down[i].wvalid = if wtarget == i { wbusy and up.wvalid and not w_done } else { '0' };
+        down[i].bready = if wtarget == i { wbusy and up.bready } else { '0' };
+        down[i].arvalid = if rtarget == i { rbusy and up.arvalid and not ar_done } else { '0' };
+        down[i].rready = if rtarget == i { rbusy and up.rready } else { '0' };
+    }
+
+    if wtarget < N {
+        up.awready = wbusy and down[wtarget].awready and not aw_done;
+        up.wready = wbusy and down[wtarget].wready and not w_done;
+        up.bvalid = wbusy and down[wtarget].bvalid;
+        up.bresp = down[wtarget].bresp;
+    } else {
+        up.awready = wbusy and not aw_done;
+        up.wready = wbusy and not w_done;
+        up.bvalid = wbusy and aw_done and w_done;
+        up.bresp = DECERR;
+    }
+    if rtarget < N {
+        up.arready = rbusy and down[rtarget].arready and not ar_done;
+        up.rvalid = rbusy and down[rtarget].rvalid;
+        up.rdata = down[rtarget].rdata;
+        up.rresp = down[rtarget].rresp;
+    } else {
+        up.arready = rbusy and not ar_done;
+        up.rvalid = rbusy and ar_done;
+        up.rdata = 0;
+        up.rresp = DECERR;
+    }
+}

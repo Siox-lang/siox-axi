@@ -26,12 +26,32 @@ entity Peripheral { clk: Bit in, bus: AxiLite<32, 32> Subordinate }
 
 A parent connects a `Manager` and a `Subordinate` through one `let wire: AxiLite<32, 32>;`.
 
+## Components
+
+| Entity | What it does |
+|---|---|
+| `axi::lite::Interconnect<A, D, N, REGION>` | One Manager to `N` Subordinates. Subordinate `i` owns the `2^REGION` bytes at `i << REGION`; anything past the last one gets `DECERR`. Writes and reads route independently, one transaction each at a time. |
+| `axi::stream::RegisterSlice<D>` | Full-throughput skid buffer: registers every output, `tready` included. |
+| `axi::stream::Fifo<D, DEPTH>` | Synchronous first-word-fall-through FIFO. |
+
+```siox
+use axi::lite::{AxiLite, Subordinate, Interconnect};
+
+entity Soc { clk: Bit in, cpu: AxiLite<32, 32> Subordinate }
+impl Soc {
+    let peripherals: AxiLite<32, 32>[2];
+    let bus: Interconnect<32, 32, 2, 12> = { .clk = clk, .up = cpu, .down = peripherals };
+    let uart: Uart = { .clk = clk, .bus = peripherals[0] };   // 0x0000
+    let gpio: Gpio = { .clk = clk, .bus = peripherals[1] };   // 0x1000
+}
+```
+
 ## Test
 
-Each `<module>_test.siox` drives a small endpoint from a testbench:
+Each `*_test.siox` drives an endpoint or component from a testbench:
 
 ```bash
 sioxc --std <sioxc>/std --test lite_test.siox -o lite_test && ./lite_test
 ```
 
-Needs a `sioxc` with Siox-lang/sioxc#68: width-parameterised struct ports.
+Needs a `sioxc` with Siox-lang/sioxc#69: arrays of view ports.

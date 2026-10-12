@@ -25,3 +25,95 @@ pub view Transmitter<D: integer> for AxiStream<D> {
 pub view Receiver<D: integer> for AxiStream<D> {
     tdata in, tstrb in, tkeep in, tlast in, tvalid in, tready out
 }
+
+// A full-throughput register slice (skid buffer): every output is a
+// register, including `tready` upstream, so it breaks the timing path in
+// both directions. When the Receiver stalls, the one beat already in flight
+// waits in the skid register.
+pub entity RegisterSlice<D: integer> {
+    clk: Bit in,
+    up: AxiStream<D> Receiver,
+    down: AxiStream<D> Transmitter
+}
+
+impl<D: integer> RegisterSlice<D> {
+    let valid: Bit = '0';
+    let data: unsigned[D] = 0;
+    let strb: unsigned[D / 8] = 0;
+    let keep: unsigned[D / 8] = 0;
+    let last: Bit = '0';
+    let skid: Bit = '0';
+    let skid_data: unsigned[D] = 0;
+    let skid_strb: unsigned[D / 8] = 0;
+    let skid_keep: unsigned[D / 8] = 0;
+    let skid_last: Bit = '0';
+
+    step: process {
+        if clk.rising() {
+            if down.tready or not valid {
+                if skid {
+                    data = skid_data; strb = skid_strb; keep = skid_keep; last = skid_last;
+                    valid = '1';
+                    skid = '0';
+                } else {
+                    data = up.tdata; strb = up.tstrb; keep = up.tkeep; last = up.tlast;
+                    valid = up.tvalid;
+                }
+            } else if up.tvalid and not skid {
+                skid_data = up.tdata; skid_strb = up.tstrb; skid_keep = up.tkeep; skid_last = up.tlast;
+                skid = '1';
+            }
+        }
+    }
+    up.tready = not skid;
+    down.tvalid = valid;
+    down.tdata = data;
+    down.tstrb = strb;
+    down.tkeep = keep;
+    down.tlast = last;
+}
+
+// A synchronous first-word-fall-through FIFO of `DEPTH` beats.
+pub entity Fifo<D: integer, DEPTH: integer> {
+    clk: Bit in,
+    up: AxiStream<D> Receiver,
+    down: AxiStream<D> Transmitter
+}
+
+impl<D: integer, DEPTH: integer> Fifo<D, DEPTH> {
+    let data: unsigned[D][DEPTH];
+    let strb: unsigned[D / 8][DEPTH];
+    let keep: unsigned[D / 8][DEPTH];
+    let last: Bit[DEPTH];
+    let head: integer = 0;
+    let tail: integer = 0;
+    let count: integer = 0;
+    let push: Bit;
+    let pop: Bit;
+
+    up.tready = if count < DEPTH { '1' } else { '0' };
+    down.tvalid = if count > 0 { '1' } else { '0' };
+    push = up.tvalid and up.tready;
+    pop = down.tvalid and down.tready;
+
+    step: process {
+        if clk.rising() {
+            if push {
+                data[tail] = up.tdata; strb[tail] = up.tstrb; keep[tail] = up.tkeep; last[tail] = up.tlast;
+                tail = if tail == DEPTH - 1 { 0 } else { tail + 1 };
+            }
+            if pop {
+                head = if head == DEPTH - 1 { 0 } else { head + 1 };
+            }
+            if push and not pop {
+                count = count + 1;
+            } else if pop and not push {
+                count = count - 1;
+            }
+        }
+    }
+    down.tdata = data[head];
+    down.tstrb = strb[head];
+    down.tkeep = keep[head];
+    down.tlast = last[head];
+}

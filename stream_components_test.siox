@@ -1,0 +1,58 @@
+module stream_components_test;
+
+use axi::stream::{AxiStream, Receiver, Transmitter, RegisterSlice, Fifo};
+
+// A slice feeding a FIFO, between a counting source and a gated sink.
+entity Chain { clk: Bit in, up: AxiStream<8> Receiver, down: AxiStream<8> Transmitter }
+impl Chain {
+    let middle: AxiStream<8>;
+    let slice: RegisterSlice<8> = { .clk = clk, .up = up, .down = middle };
+    let fifo: Fifo<8, 4> = { .clk = clk, .up = middle, .down = down };
+}
+
+#[test]
+entity StreamComponentsTest {}
+impl StreamComponentsTest {
+    let clk: Bit = '0';
+    let src: AxiStream<8>;
+    let dst: AxiStream<8>;
+    let dut: Chain = { .clk = clk, .up = src, .down = dst };
+    src.tstrb = 1; src.tkeep = 1; src.tvalid = '1'; src.tdata = 0; src.tlast = '0';
+    dst.tready = '0';
+
+    // Fill: the sink stalls, so the FIFO fills and the slice skids.
+    let sent: integer = 0;
+    for cycle in 0..9 {
+        await 1ns;
+        let taken: Bit = src.tvalid and src.tready;
+        clk = '1'; await 1ns; clk = '0';
+        if taken == '1' {
+            sent = sent + 1;
+            src.tdata = sent;
+            src.tlast = if sent == 7 { '1' } else { '0' };
+        }
+    }
+    await 1ns;
+    assert!(src.tready == '0', "backpressure reaches the source once everything is full");
+    assert!(sent == 6, "four in the FIFO, one in the slice, one in its skid register");
+
+    // Drain in order with the source stopped after beat 7.
+    dst.tready = '1';
+    let expect: integer = 0;
+    for cycle in 0..19 {
+        await 1ns;
+        let taken: Bit = src.tvalid and src.tready;
+        if dst.tvalid == '1' {
+            assert!(dst.tdata == expect, "beats leave in order, none lost or repeated");
+            expect = expect + 1;
+        }
+        clk = '1'; await 1ns; clk = '0';
+        if taken == '1' {
+            sent = sent + 1;
+            src.tdata = sent;
+            src.tlast = if sent == 7 { '1' } else { '0' };
+            if sent == 8 { src.tvalid = '0'; }
+        }
+    }
+    assert!(expect == 8, "all eight beats arrived");
+}

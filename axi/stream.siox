@@ -91,8 +91,8 @@ impl<D: integer, DEPTH: integer> Fifo<D, DEPTH> {
     let push: Bit;
     let pop: Bit;
 
-    up.tready = if count < DEPTH { '1' } else { '0' };
-    down.tvalid = if count > 0 { '1' } else { '0' };
+    up.tready = Bit(count < DEPTH);
+    down.tvalid = Bit(count > 0);
     push = up.tvalid and up.tready;
     pop = down.tvalid and down.tready;
 

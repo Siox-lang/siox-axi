@@ -41,7 +41,7 @@ impl AxiStreamTest {
     bus.tstrb = 1; bus.tkeep = 1; bus.tvalid = '1';
     for beat in 1..4 {
         bus.tdata = beat * 10;
-        bus.tlast = if beat == 4 { '1' } else { '0' };
+        bus.tlast = Bit(beat == 4);
         await 1ns;
         assert!(bus.tready == '1', "receiver is ready");
         clk = '1'; await 1ns; clk = '0';

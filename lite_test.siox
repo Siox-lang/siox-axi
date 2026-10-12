@@ -1,0 +1,72 @@
+module lite_test;
+
+use std::bits::unsigned;
+use axi::lite::{AxiLite, Subordinate, OKAY};
+
+// A one-register subordinate: a write is accepted when address and data are
+// both offered, a read returns the register one cycle after its address.
+entity Register { clk: Bit in, bus: AxiLite<32, 32> Subordinate }
+impl Register {
+    let value: unsigned[32] = 0;
+    let bvalid: Bit = '0';
+    let rvalid: Bit = '0';
+    let rdata: unsigned[32] = 0;
+    let take_write: Bit;
+    let take_read: Bit;
+    take_write = bus.awvalid and bus.wvalid and not bvalid;
+    take_read = bus.arvalid and not rvalid;
+    step: process {
+        if clk.rising() {
+            if take_write {
+                value = bus.wdata;
+                bvalid = '1';
+            } else if bus.bready {
+                bvalid = '0';
+            }
+            if take_read {
+                rdata = value;
+                rvalid = '1';
+            } else if bus.rready {
+                rvalid = '0';
+            }
+        }
+    }
+    bus.awready = take_write;
+    bus.wready = take_write;
+    bus.bvalid = bvalid;
+    bus.bresp = OKAY;
+    bus.arready = take_read;
+    bus.rvalid = rvalid;
+    bus.rdata = rdata;
+    bus.rresp = OKAY;
+}
+
+#[test]
+entity AxiLiteTest {}
+impl AxiLiteTest {
+    let clk: Bit = '0';
+    let bus: AxiLite<32, 32>;
+    let dut: Register = { .clk = clk, .bus = bus };
+
+    bus.awaddr = 0x10; bus.awprot = 0; bus.awvalid = '1';
+    bus.wdata = 0xCAFE_F00D; bus.wstrb = 0xF; bus.wvalid = '1';
+    bus.bready = '1';
+    bus.araddr = 0; bus.arprot = 0; bus.arvalid = '0'; bus.rready = '1';
+    await 1ns;
+    assert!(bus.awready == '1' and bus.wready == '1', "write accepted when both channels are valid");
+    clk = '1'; await 1ns; clk = '0';
+    bus.awvalid = '0'; bus.wvalid = '0';
+    await 1ns;
+    assert!(bus.bvalid == '1' and bus.bresp == OKAY, "write response follows the handshake");
+    clk = '1'; await 1ns; clk = '0';
+    await 1ns;
+    assert!(bus.bvalid == '0', "bready retires the response");
+
+    bus.arvalid = '1';
+    await 1ns;
+    assert!(bus.arready == '1', "read address accepted");
+    clk = '1'; await 1ns; clk = '0';
+    bus.arvalid = '0';
+    await 1ns;
+    assert!(bus.rvalid == '1' and bus.rdata == 0xCAFE_F00D, "read returns the written word");
+}

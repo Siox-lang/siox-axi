@@ -1,0 +1,59 @@
+module axi::lite;
+
+// AMBA AXI4-Lite (ARM IHI 0022): five independent valid/ready channels, one
+// beat per transaction, no IDs or bursts. `A` is the address width and `D`
+// the data width (32 or 64); `wstrb` carries one byte lane per data byte.
+//
+// ACLK and ARESETn are global to the interface and stay ordinary ports of
+// the endpoint entities.
+
+use std::bits::unsigned;
+
+pub struct AxiLite<A: integer, D: integer> {
+    // Write address channel.
+    pub awaddr: unsigned[A],
+    pub awprot: unsigned[3],
+    pub awvalid: Bit,
+    pub awready: Bit,
+    // Write data channel.
+    pub wdata: unsigned[D],
+    pub wstrb: unsigned[D / 8],
+    pub wvalid: Bit,
+    pub wready: Bit,
+    // Write response channel.
+    pub bresp: unsigned[2],
+    pub bvalid: Bit,
+    pub bready: Bit,
+    // Read address channel.
+    pub araddr: unsigned[A],
+    pub arprot: unsigned[3],
+    pub arvalid: Bit,
+    pub arready: Bit,
+    // Read data channel.
+    pub rdata: unsigned[D],
+    pub rresp: unsigned[2],
+    pub rvalid: Bit,
+    pub rready: Bit
+}
+
+pub view Manager<A: integer, D: integer> for AxiLite<A, D> {
+    awaddr out, awprot out, awvalid out, awready in,
+    wdata out, wstrb out, wvalid out, wready in,
+    bresp in, bvalid in, bready out,
+    araddr out, arprot out, arvalid out, arready in,
+    rdata in, rresp in, rvalid in, rready out
+}
+
+pub view Subordinate<A: integer, D: integer> for AxiLite<A, D> {
+    awaddr in, awprot in, awvalid in, awready out,
+    wdata in, wstrb in, wvalid in, wready out,
+    bresp out, bvalid out, bready in,
+    araddr in, arprot in, arvalid in, arready out,
+    rdata out, rresp out, rvalid out, rready in
+}
+
+// `xresp` encodings.
+pub const OKAY: integer = 0;
+pub const EXOKAY: integer = 1;
+pub const SLVERR: integer = 2;
+pub const DECERR: integer = 3;

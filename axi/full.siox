@@ -1,0 +1,89 @@
+module axi::full;
+
+// AMBA AXI4 (ARM IHI 0022): five independent valid/ready channels with
+// transaction IDs and bursts. `I` is the ID width, `A` the address width and
+// `D` the data width; `wstrb` carries one byte lane per data byte. The
+// optional USER signals are left out.
+//
+// ACLK and ARESETn are global to the interface and stay ordinary ports of
+// the endpoint entities.
+
+use std::bits::unsigned;
+
+pub struct Axi4<I: integer, A: integer, D: integer> {
+    // Write address channel.
+    pub awid: unsigned[I],
+    pub awaddr: unsigned[A],
+    pub awlen: unsigned[8],
+    pub awsize: unsigned[3],
+    pub awburst: unsigned[2],
+    pub awlock: Bit,
+    pub awcache: unsigned[4],
+    pub awprot: unsigned[3],
+    pub awqos: unsigned[4],
+    pub awregion: unsigned[4],
+    pub awvalid: Bit,
+    pub awready: Bit,
+    // Write data channel.
+    pub wdata: unsigned[D],
+    pub wstrb: unsigned[D / 8],
+    pub wlast: Bit,
+    pub wvalid: Bit,
+    pub wready: Bit,
+    // Write response channel.
+    pub bid: unsigned[I],
+    pub bresp: unsigned[2],
+    pub bvalid: Bit,
+    pub bready: Bit,
+    // Read address channel.
+    pub arid: unsigned[I],
+    pub araddr: unsigned[A],
+    pub arlen: unsigned[8],
+    pub arsize: unsigned[3],
+    pub arburst: unsigned[2],
+    pub arlock: Bit,
+    pub arcache: unsigned[4],
+    pub arprot: unsigned[3],
+    pub arqos: unsigned[4],
+    pub arregion: unsigned[4],
+    pub arvalid: Bit,
+    pub arready: Bit,
+    // Read data channel.
+    pub rid: unsigned[I],
+    pub rdata: unsigned[D],
+    pub rresp: unsigned[2],
+    pub rlast: Bit,
+    pub rvalid: Bit,
+    pub rready: Bit
+}
+
+pub view Manager<I: integer, A: integer, D: integer> for Axi4<I, A, D> {
+    awid out, awaddr out, awlen out, awsize out, awburst out, awlock out,
+    awcache out, awprot out, awqos out, awregion out, awvalid out, awready in,
+    wdata out, wstrb out, wlast out, wvalid out, wready in,
+    bid in, bresp in, bvalid in, bready out,
+    arid out, araddr out, arlen out, arsize out, arburst out, arlock out,
+    arcache out, arprot out, arqos out, arregion out, arvalid out, arready in,
+    rid in, rdata in, rresp in, rlast in, rvalid in, rready out
+}
+
+pub view Subordinate<I: integer, A: integer, D: integer> for Axi4<I, A, D> {
+    awid in, awaddr in, awlen in, awsize in, awburst in, awlock in,
+    awcache in, awprot in, awqos in, awregion in, awvalid in, awready out,
+    wdata in, wstrb in, wlast in, wvalid in, wready out,
+    bid out, bresp out, bvalid out, bready in,
+    arid in, araddr in, arlen in, arsize in, arburst in, arlock in,
+    arcache in, arprot in, arqos in, arregion in, arvalid in, arready out,
+    rid out, rdata out, rresp out, rlast out, rvalid out, rready in
+}
+
+// `xburst` encodings.
+pub const FIXED: integer = 0;
+pub const INCR: integer = 1;
+pub const WRAP: integer = 2;
+
+// `xresp` encodings.
+pub const OKAY: integer = 0;
+pub const EXOKAY: integer = 1;
+pub const SLVERR: integer = 2;
+pub const DECERR: integer = 3;

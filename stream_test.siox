@@ -1,0 +1,59 @@
+module stream_test;
+
+use std::bits::unsigned;
+use axi::stream::{AxiStream, Receiver};
+
+// Sums each packet and publishes the sum when `tlast` is transferred.
+entity PacketSum { clk: Bit in, accept: Bit in, bus: AxiStream<8> Receiver,
+                   sum: unsigned[16] out, packets: unsigned[8] out }
+impl PacketSum {
+    let running: unsigned[16] = 0;
+    let total: unsigned[16] = 0;
+    let count: unsigned[8] = 0;
+    step: process {
+        if clk.rising() {
+            if bus.tvalid and accept {
+                if bus.tlast {
+                    total = running + unsigned[16](bus.tdata);
+                    running = 0;
+                    count = count + 1;
+                } else {
+                    running = running + unsigned[16](bus.tdata);
+                }
+            }
+        }
+    }
+    bus.tready = accept;
+    sum = total;
+    packets = count;
+}
+
+#[test]
+entity AxiStreamTest {}
+impl AxiStreamTest {
+    let clk: Bit = '0';
+    let accept: Bit = '1';
+    let bus: AxiStream<8>;
+    let sum: unsigned[16];
+    let packets: unsigned[8];
+    let dut: PacketSum = { .clk = clk, .accept = accept, .bus = bus, .sum = sum, .packets = packets };
+
+    bus.tstrb = 1; bus.tkeep = 1; bus.tvalid = '1';
+    for beat in 1..4 {
+        bus.tdata = beat * 10;
+        bus.tlast = if beat == 4 { '1' } else { '0' };
+        await 1ns;
+        assert!(bus.tready == '1', "receiver is ready");
+        clk = '1'; await 1ns; clk = '0';
+    }
+    bus.tvalid = '0';
+    await 1ns;
+    assert!(packets == 1 and sum == 100, "one packet of 10 + 20 + 30 + 40");
+
+    accept = '0'; bus.tvalid = '1'; bus.tdata = 7; bus.tlast = '1';
+    await 1ns;
+    assert!(bus.tready == '0', "backpressure reaches the transmitter");
+    clk = '1'; await 1ns; clk = '0';
+    await 1ns;
+    assert!(packets == 1, "no transfer without tready");
+}

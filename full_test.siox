@@ -1,0 +1,76 @@
+module full_test;
+
+use std::bits::unsigned;
+use axi::full::{Axi4, Subordinate, OKAY};
+
+// A one-register subordinate for single-beat transactions: it echoes the
+// transaction ID on the response and marks every read beat as the last.
+entity Register { clk: Bit in, bus: Axi4<4, 32, 32> Subordinate }
+impl Register {
+    let value: unsigned[32] = 0;
+    let bid: unsigned[4] = 0;
+    let bvalid: Bit = '0';
+    let rid: unsigned[4] = 0;
+    let rdata: unsigned[32] = 0;
+    let rvalid: Bit = '0';
+    let take_write: Bit;
+    let take_read: Bit;
+    take_write = bus.awvalid and bus.wvalid and not bvalid;
+    take_read = bus.arvalid and not rvalid;
+    step: process {
+        if clk.rising() {
+            if take_write {
+                value = bus.wdata;
+                bid = bus.awid;
+                bvalid = '1';
+            } else if bus.bready {
+                bvalid = '0';
+            }
+            if take_read {
+                rdata = value;
+                rid = bus.arid;
+                rvalid = '1';
+            } else if bus.rready {
+                rvalid = '0';
+            }
+        }
+    }
+    bus.awready = take_write;
+    bus.wready = take_write;
+    bus.bid = bid;
+    bus.bresp = OKAY;
+    bus.bvalid = bvalid;
+    bus.arready = take_read;
+    bus.rid = rid;
+    bus.rdata = rdata;
+    bus.rresp = OKAY;
+    bus.rlast = '1';
+    bus.rvalid = rvalid;
+}
+
+#[test]
+entity Axi4Test {}
+impl Axi4Test {
+    let clk: Bit = '0';
+    let bus: Axi4<4, 32, 32>;
+    let dut: Register = { .clk = clk, .bus = bus };
+
+    bus.awid = 5; bus.awaddr = 0x40; bus.awlen = 0; bus.awsize = 2; bus.awvalid = '1';
+    bus.wdata = 0x1234_5678; bus.wstrb = 0xF; bus.wlast = '1'; bus.wvalid = '1';
+    bus.bready = '1'; bus.rready = '1'; bus.arvalid = '0';
+    await 1ns;
+    assert!(bus.awready == '1' and bus.wready == '1', "write accepted");
+    clk = '1'; await 1ns; clk = '0';
+    bus.awvalid = '0'; bus.wvalid = '0';
+    await 1ns;
+    assert!(bus.bvalid == '1' and bus.bid == 5 and bus.bresp == OKAY, "response carries the write ID");
+    clk = '1'; await 1ns; clk = '0';
+
+    bus.arid = 9; bus.araddr = 0x40; bus.arlen = 0; bus.arsize = 2; bus.arvalid = '1';
+    await 1ns;
+    clk = '1'; await 1ns; clk = '0';
+    bus.arvalid = '0';
+    await 1ns;
+    assert!(bus.rvalid == '1' and bus.rid == 9 and bus.rlast == '1', "read beat carries its ID and last");
+    assert!(bus.rdata == 0x1234_5678, "read returns the written word");
+}

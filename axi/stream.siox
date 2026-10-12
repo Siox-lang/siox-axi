@@ -1,0 +1,27 @@
+module axi::stream;
+
+// AMBA AXI4-Stream (ARM IHI 0051): one valid/ready channel from Transmitter
+// to Receiver. `D` is the data width; `tstrb` and `tkeep` carry one bit per
+// data byte. The optional TID, TDEST and TUSER signals are left out.
+//
+// ACLK and ARESETn are global to the interface and stay ordinary ports of
+// the endpoint entities.
+
+use std::bits::unsigned;
+
+pub struct AxiStream<D: integer> {
+    pub tdata: unsigned[D],
+    pub tstrb: unsigned[D / 8],
+    pub tkeep: unsigned[D / 8],
+    pub tlast: Bit,
+    pub tvalid: Bit,
+    pub tready: Bit
+}
+
+pub view Transmitter<D: integer> for AxiStream<D> {
+    tdata out, tstrb out, tkeep out, tlast out, tvalid out, tready in
+}
+
+pub view Receiver<D: integer> for AxiStream<D> {
+    tdata in, tstrb in, tkeep in, tlast in, tvalid in, tready out
+}
